@@ -25,13 +25,16 @@ MEMORY_FILE = "clawd_memory.json"
 
 def load_memory():
     if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_memory(mem):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(mem, f, indent=2)
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(mem, f, indent=2, ensure_ascii=False)
 
 memory = load_memory()
 
@@ -75,12 +78,15 @@ def worker(task, q):
                 text=True,
                 timeout=TIMEOUT
             )
-            q.put((r.stdout + r.stderr).strip() or "✅ تم التنفيذ")
+
+            output = (r.stdout + r.stderr).strip()
+            q.put(output if output else "✅ تم التنفيذ")
             return
 
         if task["type"] == "python":
             path = tempfile.mktemp(suffix=".py")
-            with open(path, "w") as f:
+
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(task["cmd"])
 
             r = subprocess.run(
@@ -90,7 +96,9 @@ def worker(task, q):
                 timeout=TIMEOUT
             )
 
-            q.put((r.stdout + r.stderr).strip() or "✅ تم التنفيذ")
+            output = (r.stdout + r.stderr).strip()
+            q.put(output if output else "✅ تم التنفيذ")
+
             os.remove(path)
 
     except subprocess.TimeoutExpired:
@@ -162,436 +170,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= BOOT =================
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
-# ============== AI UNDERSTANDING ==============
-
-def understand(text):
-    t = text.lower()
-
-    if "احفظ" in t or "تذكر" in t:
-        parts = text.split()
-        if len(parts) >= 3:
-            return ("remember", parts[-2], parts[-1])
-        return ("unknown", None)
-
-    if "استرجع" in t or "اعرض" in t:
-        parts = text.split()
-        if len(parts) >= 2:
-            return ("recall", parts[-1])
-        return ("unknown", None)
-
-    if t.startswith("نفذ") or t.startswith("شغل"):
-        parts = text.split(" ", 1)
-        if len(parts) == 2:
-            return ("system", parts[1])
-        return ("unknown", None)
-
-    if t.startswith("!"):
-        return ("system", t[1:])
-
-    if "حالة" in t or "انت حي" in t:
-        return ("status", None)
-
-    return ("chat", text)
-
-# ============== EXECUTOR ==============
-
-def worker(task, q):
-    try:
-        if task["type"] == "system":
-            r = subprocess.run(
-                task["cmd"],
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT
-            )
-            q.put((r.stdout + r.stderr).strip() or "✅ تم التنفيذ")
-            return
-
-        if task["type"] == "python":
-            path = tempfile.mktemp(suffix=".py")
-            with open(path, "w") as f:
-                f.write(task["cmd"])
-
-            r = subprocess.run(
-                ["python3", path],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT
-            )
-
-            q.put((r.stdout + r.stderr).strip() or "✅ تم التنفيذ")
-            os.remove(path)
-
-    except subprocess.TimeoutExpired:
-        q.put("⏱ انتهى وقت التنفيذ")
-    except Exception:
-        q.put(traceback.format_exc())
-
-def run_exec(task):
-    q = Queue()
-    p = Process(target=worker, args=(task, q))
-    p.start()
-    p.join(TIMEOUT + 3)
-
-    if p.is_alive():
-        p.terminate()
-        return "⏱ انتهى الوقت"
-
-    return q.get() if not q.empty() else "❌ لا يوجد مخرجات"
-
-# ============== TELEGRAM ==============
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Clawd AI Agent\n\n"
-        "تحدث طبيعي:\n"
-        "مرحبًا كيف حالك؟\n\n"
-        "أوامر:\n"
-        "احفظ اسمي احمد\n"
-        "استرجع اسمي\n"
-        "نفذ ls\n"
-        "!whoami\n"
-        "print('hello')\n"
-        "حالة"
-    )
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    action = understand(msg)
-
-    if action[0] == "chat":
-        await update.message.reply_text("🤖 Clawd: " + action[1])
-        return
-
-    if action[0] == "remember":
-        memory[action[1]] = action[2]
-        save_memory(memory)
-        await update.message.reply_text("💾 تم الحفظ")
-        return
-
-    if action[0] == "recall":
-        await update.message.reply_text(
-            str(memory.get(action[1], "❌ غير موجود"))
-        )
-        return
-
-    if action[0] == "status":
-        await update.message.reply_text("✅ Clawd يعمل بنجاح")
-        return
-
-    if action[0] == "system":
-        out = run_exec({"type": "system", "cmd": msg.replace("نفذ ", "").lstrip("!")})
-    else:
-        out = run_exec({"type": "python", "cmd": msg})
-
-    if len(out) > MAX_OUTPUT:
-        out = out[:MAX_OUTPUT] + "\n...(تم القطع)"
-
-    await update.message.reply_text("📤 " + out)
-
-# ============== BOOT ==============
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()            q.put((r.stdout + r.stderr).strip() or "✅ Done")
-            return
-
-        if code["type"] == "python":
-            path = tempfile.mktemp(suffix=".py")
-            with open(path, "w") as f:
-                f.write(code["cmd"])
-
-            r = subprocess.run(
-                ["python3", path], capture_output=True, text=True, timeout=TIMEOUT
-            )
-            q.put((r.stdout + r.stderr).strip() or "✅ Done")
-            os.remove(path)
-
-    except subprocess.TimeoutExpired:
-        q.put("⏱ Timeout")
-    except Exception:
-        q.put(traceback.format_exc())
-
-def run_exec(obj):
-    q = Queue()
-    p = Process(target=worker, args=(obj, q))
-    p.start()
-    p.join(TIMEOUT + 2)
-
-    if p.is_alive():
-        p.terminate()
-        return "⏱ Timeout"
-
-    return q.get() if not q.empty() else "❌ No output"
-
-# ================= TELEGRAM HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Clawd AI Smart Agent\n\n"
-        "تكلّم طبيعي:\n"
-        "احفظ اسمي احمد\n"
-        "استرجع اسمي\n"
-        "نفذ ls\n"
-        "print('hello')\n"
-        "!whoami\n"
-        "حالة"
-    )
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    action = understand(msg)
-
-    # --- محادثة طبيعية ---
-    if action[0] == "chat":
-        await update.message.reply_text("🤖 Clawd يقول: " + action[1])
-        return
-
-    # --- حفظ واسترجاع ---
-    if action[0] == "remember" and action[1] and action[2]:
-        memory[action[1]] = action[2]
-        save_memory(memory)
-        await update.message.reply_text("💾 تم الحفظ")
-        return
-
-    if action[0] == "recall" and action[1]:
-        await update.message.reply_text(str(memory.get(action[1], "❌ غير موجود")))
-        return
-
-    # --- فحص الحالة ---
-    if action[0] == "auto":
-        await update.message.reply_text("🤖 Clawd يعمل بنجاح")
-        return
-
-    # --- تنفيذ الأوامر ---
-    if action[0] == "exec":
-        out = run_exec({"type": "system", "cmd": action[1]})
-    elif action[0] == "python":
-        out = run_exec({"type": "python", "cmd": action[1]})
-    else:
-        out = "❌ لم أفهم الأمر"
-
-    if len(out) > MAX_OUTPUT:
-        out = out[:MAX_OUTPUT] + "\n...(cut)"
-
-    await update.message.reply_text(f"📤 {out}")
-
-# ================= BOOT =================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()            return ("remember", parts[-2], parts[-1])
-        return ("unknown", None)
-
-    if "استرجع" in t or "اعرض" in t:
-        parts = text.split()
-        if len(parts) >= 2:
-            return ("recall", parts[-1])
-        return ("unknown", None)
-
-    if t.startswith("نفذ") or t.startswith("شغل"):
-        parts = text.split(" ", 1)
-        if len(parts) == 2:
-            return ("exec", parts[1])
-        return ("unknown", None)
-
-    if t.startswith("!"):
-        return ("system", t[1:])
-
-    if "حالة" in t or "انت حي" in t:
-        return ("auto", None)
-
-    # كل شيء آخر يُعتبر محادثة طبيعية
-    return ("chat", text)
-
-# ================= EXECUTOR =================
-def worker(code, q):
-    try:
-        if code["type"] == "system":
-            r = subprocess.run(
-                code["cmd"], shell=True, capture_output=True, text=True, timeout=TIMEOUT
-            )
-            q.put((r.stdout + r.stderr).strip() or "✅ Done")
-            return
-
-        if code["type"] == "python":
-            path = tempfile.mktemp(suffix=".py")
-            with open(path, "w") as f:
-                f.write(code["cmd"])
-
-            r = subprocess.run(
-                ["python3", path], capture_output=True, text=True, timeout=TIMEOUT
-            )
-            q.put((r.stdout + r.stderr).strip() or "✅ Done")
-            os.remove(path)
-
-    except subprocess.TimeoutExpired:
-        q.put("⏱ Timeout")
-    except Exception:
-        q.put(traceback.format_exc())
-
-def run_exec(obj):
-    q = Queue()
-    p = Process(target=worker, args=(obj, q))
-    p.start()
-    p.join(TIMEOUT + 2)
-
-    if p.is_alive():
-        p.terminate()
-        return "⏱ Timeout"
-
-    return q.get() if not q.empty() else "❌ No output"
-
-# ================= TELEGRAM HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Clawd AI Smart Agent\n\n"
-        "تكلّم طبيعي:\n"
-        "احفظ اسمي احمد\n"
-        "استرجع اسمي\n"
-        "نفذ ls\n"
-        "print('hello')\n"
-        "!whoami\n"
-        "حالة"
-    )
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    action = understand(msg)
-
-    # --- محادثة طبيعية ---
-    if action[0] == "chat":
-        await update.message.reply_text("🤖 Clawd يقول: " + action[1])
-        return
-
-    # --- حفظ واسترجاع ---
-    if action[0] == "remember" and action[1] and action[2]:
-        memory[action[1]] = action[2]
-        save_memory(memory)
-        await update.message.reply_text("💾 تم الحفظ")
-        return
-
-    if action[0] == "recall" and action[1]:
-        await update.message.reply_text(str(memory.get(action[1], "❌ غير موجود")))
-        return
-
-    # --- فحص الحالة ---
-    if action[0] == "auto":
-        await update.message.reply_text("🤖 Clawd يعمل بنجاح")
-        return
-
-    # --- تنفيذ الأوامر ---
-    if action[0] == "exec":
-        out = run_exec({"type": "system", "cmd": action[1]})
-    elif action[0] == "python":
-        out = run_exec({"type": "python", "cmd": action[1]})
-    else:
-        out = "❌ لم أفهم الأمر"
-
-    if len(out) > MAX_OUTPUT:
-        out = out[:MAX_OUTPUT] + "\n...(cut)"
-
-    await update.message.reply_text(f"📤 {out}")
-
-# ================= BOOT =================
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()            return
-
-        if code["type"] == "python":
-            path = tempfile.mktemp(suffix=".py")
-            with open(path, "w") as f:
-                f.write(code["cmd"])
-
-            r = subprocess.run(
-                ["python3", path], capture_output=True, text=True, timeout=TIMEOUT
-            )
-            q.put((r.stdout + r.stderr).strip() or "✅ Done")
-            os.remove(path)
-
-    except subprocess.TimeoutExpired:
-        q.put("⏱ Timeout")
-    except Exception:
-        q.put(traceback.format_exc())
-
-def run_exec(obj):
-    q = Queue()
-    p = Process(target=worker, args=(obj, q))
-    p.start()
-    p.join(TIMEOUT + 2)
-
-    if p.is_alive():
-        p.terminate()
-        return "⏱ Timeout"
-
-    return q.get() if not q.empty() else "❌ No output"
-
-# ================= TELEGRAM HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Clawd AI Smart Agent\n\n"
-        "تكلّم طبيعي:\n"
-        "احفظ اسمي احمد\n"
-        "استرجع اسمي\n"
-        "نفذ ls\n"
-        "print('hello')\n"
-        "!whoami\n"
-        "حالة"
-    )
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text.strip()
-    action = understand(msg)
-
-    if action[0] == "remember" and action[1] and action[2]:
-        memory[action[1]] = action[2]
-        save_memory(memory)
-        await update.message.reply_text("💾 تم الحفظ")
-        return
-
-    if action[0] == "recall" and action[1]:
-        await update.message.reply_text(str(memory.get(action[1], "❌ غير موجود")))
-        return
-
-    if action[0] == "auto":
-        await update.message.reply_text("🤖 Clawd يعمل بنجاح")
-        return
-
-    if action[0] == "exec":
-        out = run_exec({"type": "system", "cmd": action[1]})
-    elif action[0] == "python":
-        out = run_exec({"type": "python", "cmd": action[1]})
-    else:
-        out = "❌ لم أفهم الأمر"
-
-    if len(out) > MAX_OUTPUT:
-        out = out[:MAX_OUTPUT] + "\n...(cut)"
-
-    await update.message.reply_text(f"📤 {out}")
-
-# ================= BOOT =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
