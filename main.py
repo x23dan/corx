@@ -11,7 +11,7 @@ from telegram.ext import (
     filters
 )
 
-BOT_TOKEN = "8547839815:AAFakJx9CAFG6iMk1HeV1Df_v59mguqLhSU"
+BOT_TOKEN = "8019013565:AAF49_oXegfpeF7pLfa2GO7--i6emxUGPMg"
 #os.environ.get("BOT_TOKEN")
 MAX_OUTPUT = 40000
 
