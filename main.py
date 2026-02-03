@@ -24,7 +24,7 @@ def worker(code: str, q: Queue):
 
     try:
         # ---------- LINUX MODE ----------
-        if code.startswith("!"):
+        if code.startswith("."):
             cmd = code[1:].strip()
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
