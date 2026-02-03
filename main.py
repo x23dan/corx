@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import os, json, tempfile, traceback, subprocess, re
+import os, json, tempfile, traceback, subprocess
 from multiprocessing import Process, Queue
-from telegram import Update, Document
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
 BOT_TOKEN = "8019013565:AAGKHWKAC6gMBFPSUNSCNsFY5Lzgj4Se8SM"
@@ -10,7 +10,6 @@ MAX_OUTPUT = 40000
 MEMORY_FILE = "clawd_memory.json"
 
 # ================= MEMORY =================
-
 def load_memory():
     if os.path.exists(MEMORY_FILE):
         return json.load(open(MEMORY_FILE))
@@ -22,7 +21,6 @@ def save_memory(m):
 memory = load_memory()
 
 # ================= AI UNDERSTANDING =================
-
 def understand(text):
     t = text.lower()
 
@@ -45,27 +43,90 @@ def understand(text):
     return ("python", text)
 
 # ================= EXEC =================
-
 def worker(code, q):
     try:
         if code["type"] == "system":
             r = subprocess.run(code["cmd"], shell=True, capture_output=True, text=True, timeout=TIMEOUT)
-            q.put((r.stdout + r.stderr).strip() or "Done")
+            q.put((r.stdout + r.stderr).strip() or "✅ Done")
             return
 
         if code["type"] == "python":
-            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            # استخدام mktemp لتجنب مشاكل NamedTemporaryFile
+            path = tempfile.mktemp(suffix=".py")
+            with open(path, "w") as f:
                 f.write(code["cmd"])
-                path = f.name
 
             r = subprocess.run(["python3", path], capture_output=True, text=True, timeout=TIMEOUT)
-            q.put((r.stdout + r.stderr).strip() or "Done")
+            q.put((r.stdout + r.stderr).strip() or "✅ Done")
             os.remove(path)
-            return
 
-    except:
+    except subprocess.TimeoutExpired:
+        q.put("⏱ Timeout")
+    except Exception:
         q.put(traceback.format_exc())
 
+def run_exec(obj):
+    q = Queue()
+    p = Process(target=worker, args=(obj,q))
+    p.start()
+    p.join(TIMEOUT+2)
+
+    if p.is_alive():
+        p.terminate()
+        return "⏱ Timeout"
+
+    return q.get() if not q.empty() else "❌ No output"
+
+# ================= TELEGRAM =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 Clawd AI Smart Agent\n\n"
+        "تكلّم طبيعي:\n"
+        "احفظ اسمي احمد\n"
+        "استرجع اسمي\n"
+        "نفذ ls\n"
+        "print('hello')\n"
+        "!whoami\n"
+        "حالة"
+    )
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text.strip()
+    action = understand(msg)
+
+    if action[0] == "remember":
+        memory[action[1]] = action[2]
+        save_memory(memory)
+        await update.message.reply_text("💾 تم الحفظ")
+        return
+
+    if action[0] == "recall":
+        await update.message.reply_text(str(memory.get(action[1], "❌ غير موجود")))
+        return
+
+    if action[0] == "auto":
+        await update.message.reply_text("🤖 Clawd يعمل بنجاح")
+        return
+
+    if action[0] == "exec":
+        out = run_exec({"type":"system","cmd":action[1]})
+    elif action[0] == "python":
+        out = run_exec({"type":"python","cmd":action[1]})
+
+    if len(out) > MAX_OUTPUT:
+        out = out[:MAX_OUTPUT] + "\n...(cut)"
+
+    await update.message.reply_text(f"📤 {out}")
+
+# ================= BOOT =================
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
 def run_exec(obj):
     q = Queue()
     p = Process(target=worker, args=(obj,q))
